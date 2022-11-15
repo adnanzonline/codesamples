@@ -1,0 +1,371 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+	"Description":"Run a Code Build Job on each pull request and print the branch build and test status on pull request activity timeline in AWS Code Commit Service",
+    "Parameters": {
+        "CodeCommitRepoName": {
+            "Description": "The name of the code commit repository",
+            "Type": "String"
+        },
+        "ProjectName": {
+            "Default": "Sampleapp",
+            "Description": "The name of the project",
+            "Type": "String"
+        }
+    },
+    "Resources": {
+        "PullRequestStartRule": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Name": "${ProjectName}-${AWS::StackName}-TriggerPullRequestStart",
+                "EventPattern": {
+                    "source": [
+                        "aws.codecommit"
+                    ],
+                    "detail-type": [
+                        "CodeCommit Pull Request State Change"
+                    ],
+                    "resources": [
+                        "arn:aws:codecommit:us-east-1:613784674842:DotnetSMExample"
+                    ],
+                    "detail": {
+                        "event": [
+                            "pullRequestCreated",
+                            "pullRequestSourceBranchUpdated"
+                        ]
+                    }
+                },
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::GetAtt": [
+                                "LFCodeBuildStart",
+                                "Arn"
+                            ]
+                        },
+                        "Id": "TargetFunctionV1"
+                    }
+                ]
+            }
+        },
+        "PermissionForEventsToInvokeLambda": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Ref": "LFCodeBuildStart"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::GetAtt": [
+                        "PullRequestStartRule",
+                        "Arn"
+                    ]
+                }
+            }
+        },
+        "PullRequestBuildResultRule": {
+            "Type": "AWS::Events::Rule",
+            "Properties": {
+                "Name": "${ProjectName}-${AWS::StackName}-TriggerPullRequestResult",
+                "EventPattern": {
+                    "source": [
+                        "aws.codebuild"
+                    ],
+                    "detail-type": [
+                        "CodeBuild Build State Change"
+                    ],
+                    "detail": {
+                        "project-name": [
+                            "ValidatePullRequestBuild"
+                        ],
+                        "build-status": [
+                            "FAILED",
+                            "SUCCEEDED"
+                        ]
+                    }
+                },
+                "State": "ENABLED",
+                "Targets": [
+                    {
+                        "Arn": {
+                            "Fn::GetAtt": [
+                                "LFCodeBuildResults",
+                                "Arn"
+                            ]
+                        },
+                        "Id": "TargetFunctionV1"
+                    }
+                ]
+            }
+        },
+        "PermissionForEventsToInvokeLambdaResults": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": {
+                    "Ref": "LFCodeBuildResults"
+                },
+                "Action": "lambda:InvokeFunction",
+                "Principal": "events.amazonaws.com",
+                "SourceArn": {
+                    "Fn::GetAtt": [
+                        "PullRequestBuildResultRule",
+                        "Arn"
+                    ]
+                }
+            }
+        },
+        "LFCodeBuildStart": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "FunctionName": {"Fn::Sub": "${ProjectName}-${AWS::StackName}-CodeBuildStart"},
+                "Handler": "index.handler",
+                "Runtime": "nodejs12.x",
+                "Environment": {
+                    "Variables": {
+                        "REPOSITORY_NAME": {
+                            "Ref": "CodeCommitRepoName"
+                        },
+                        "CODEBUILD_PROJECT": {
+                            "Fn::Sub": "${CodeBuild}"
+                        },
+                        "CODEBUILD_PROJECT_BUILD": {
+                            "Fn::Sub": "${CodeBuildTest}"
+                        },
+                        "REGION": {
+                            "Fn::Sub": "${AWS::Region}"
+                        }
+                    }
+                },
+                "Role": {
+                    "Fn::GetAtt": [
+                        "ValidatePRLambdaExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Code": "CodeBuildStart"
+            }
+        },
+        "LFCodeBuildResults": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "FunctionName": {"Fn::Sub": "${ProjectName}-${AWS::StackName}-CodeBuildResults"},
+                "Handler": "index.handler",
+                "Runtime": "nodejs12.x",
+                "Environment": {
+                    "Variables": {
+                        "REPOSITORY_NAME": {
+                            "Ref": "CodeCommitRepoName"
+                        },
+                        "REGION": {
+                            "Fn::Sub": "${AWS::Region}"
+                        }
+                    }
+                },
+                "Role": {
+                    "Fn::GetAtt": [
+                        "ValidatePRLambdaExecutionRole",
+                        "Arn"
+                    ]
+                },
+                "Code": "CodeBuildResults"
+            }
+        },
+        "ValidatePRLambdaExecutionRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "lambda.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "root",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": "logs:CreateLogGroup",
+                                    "Resource": {
+                                        "Fn::Sub": "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+                                    }
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "logs:CreateLogStream",
+                                        "logs:PutLogEvents"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "codebuild:StartBuild",
+                                        "codecommit:PostCommentForPullRequest"
+                                    ],
+                                    "Resource": "*"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "CBUnitTest": {
+            "Type": "AWS::CodeBuild::Project",
+            "Properties": {
+                "Artifacts": {
+                    "Type": "NO_ARTIFACTS"
+                },
+                "Environment": {
+                    "ComputeType": "BUILD_GENERAL1_SMALL",
+                    "Image": "aws/codebuild/standard:4.0",
+                    "Type": "LINUX_CONTAINER",
+                    "PrivilegedMode": "true"
+                },
+                "Name": {
+                    "Fn::Sub": "${ProjectName}-${AWS::StackName}-UnitTest"
+                },
+                "ServiceRole": {
+                    "Ref": "CodeBuildRole"
+                },
+                "Source": {
+                    "Type": "CODECOMMIT",
+                    "Location": {
+                        "Fn::Sub": "https://git-codecommit.${AWS::Region}.amazonaws.com/v1/repos/${CodeCommitRepoName}"
+                    },
+                    "BuildSpec": "config/validate/buildspec_unit_tests.yaml"
+                }
+            }
+        },
+        "CBBuildTest": {
+            "Type": "AWS::CodeBuild::Project",
+            "Properties": {
+                "Artifacts": {
+                    "Type": "NO_ARTIFACTS"
+                },
+                "Environment": {
+                    "ComputeType": "BUILD_GENERAL1_SMALL",
+                    "Image": "aws/codebuild/standard:4.0",
+                    "Type": "LINUX_CONTAINER",
+                    "PrivilegedMode": "true"
+                },
+                "Name": {
+                    "Fn::Sub": "${ProjectName}-${AWS::StackName}-BuildTest"
+                },
+                "ServiceRole": {
+                    "Ref": "CodeBuildRole"
+                },
+                "Source": {
+                    "Type": "CODECOMMIT",
+                    "Location": {
+                        "Fn::Sub": "https://git-codecommit.${AWS::Region}.amazonaws.com/v1/repos/${CodeCommitRepoName}"
+                    },
+                    "BuildSpec": "config/validate/buildspec_build_tests.yaml"
+                }
+            }
+        },
+        "CodeBuildRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "codebuild.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ]
+                },
+                "Policies": [
+                    {
+                        "PolicyName": {
+                            "Fn::Sub": "${ProjectName}-${AWS::StackName}-CodeCommitPull"
+                        },
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Resource": "*",
+                                    "Action": [
+                                        "logs:CreateLogGroup",
+                                        "logs:CreateLogStream",
+                                        "logs:PutLogEvents"
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Resource": "*",
+                                    "Action": [
+                                        "s3:PutObject",
+                                        "s3:GetObject",
+                                        "s3:GetObjectVersion",
+                                        "s3:GetBucketAcl",
+                                        "s3:GetBucketLocation"
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Resource": [
+                                        "*"
+                                    ],
+                                    "Action": [
+                                        "codecommit:GitPull"
+                                    ]
+                                },
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "codebuild:CreateReportGroup",
+                                        "codebuild:CreateReport",
+                                        "codebuild:UpdateReport",
+                                        "codebuild:BatchPutTestCases",
+                                        "codebuild:BatchPutCodeCoverages"
+                                    ],
+                                    "Resource": "*"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        }
+    },
+    "Output": {
+        "CodeBuildUnitTestProject" :{
+            "Description": "Code build project that runs unit test for pull request",
+            "Value": { "Ref": "CBUnitTest"}
+        },
+        "CodeBuildBuildCodeProject": {
+            "Description": "Code build project that runs code build for pull request",
+            "Value": { "Ref": "CBBuildTest"}
+        },
+        "LambdaStartBuild": {
+            "Description": "Lambda function that start build project to validate pull request",
+            "Value": { "Ref": "LFCodeBuildStart"}
+        },
+        "LambdaBuildResults": {
+            "Description": "Lambda function comments build results in pull request activity timeline",
+            "Value": { "Ref": "LFCodeBuildResults"}
+        }
+    }
+}
